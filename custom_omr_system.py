@@ -398,9 +398,9 @@ class BubbleCNNClassifier:
         total_pixels = roi.shape[0] * roi.shape[1]
         fill_ratio = filled_pixels / total_pixels
         
-        if fill_ratio > 0.4:  # More than 40% filled
+        if fill_ratio > 0.25:  # More than 40% filled
             return 'filled', fill_ratio
-        elif fill_ratio > 0.15:  # Partially filled
+        elif fill_ratio > 0.10:  # Partially filled
             return 'unclear', fill_ratio
         else:
             return 'empty', 1 - fill_ratio
@@ -751,4 +751,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
