@@ -11,6 +11,10 @@ import logging
 import base64
 import time
 
+import os
+print("Current working dir:", os.getcwd())
+print("Model exists:", os.path.exists('omr_bubble_classifier.h5'))
+
 # Import your custom OMR classes
 from custom_omr_system import (
     OMRProcessor, OMRAnswerKeyLoader, 
@@ -539,3 +543,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
