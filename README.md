@@ -44,5 +44,6 @@ Our system is built around a comprehensive and automated workflow.
 ---
 
 ## *Team Mark1*
-    * Arnav Nigam*: Project Manager (ML Engineer)
-    * *Aditya Kumar:  Frontend Developer    * **Manan Mittal*:  Backend Developer (CNN Pipeline Manager)
+    *Arnav Nigam*: Project Manager (ML Engineer)
+    *Aditya Kumar*:  Frontend Developer    
+    *Manan Mittal*:  Backend Developer (CNN Pipeline Manager)
