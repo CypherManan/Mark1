@@ -1,562 +1,456 @@
+import streamlit as st
 import cv2
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from tensorflow import keras
-import os
+from PIL import Image
+import io
 import json
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
-import logging
 from datetime import datetime
-import argparse
-from PIL import Image, ImageDraw, ImageFont
-import random
-from typing import List, Tuple, Dict
-import traceback
+import logging
 
-# Import your custom OMR classes with error handling
-try:
-    from custom_omr_system import (
-        OMRAnswerKeyLoader, AdvancedImagePreprocessor, 
-        BubbleDetectorAdvanced, BubbleCNNClassifier
-    )
-    IMPORTS_SUCCESS = True
-except ImportError as e:
-    logging.error(f"Failed to import OMR classes: {e}")
-    IMPORTS_SUCCESS = False
-
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class EnhancedBubbleClassifier(BubbleCNNClassifier):
-    """Enhanced bubble classifier with real data training capabilities and error handling"""
+# Page config
+st.set_page_config(
+    page_title="OMR Sheet Evaluator",
+    page_icon="📝",
+    layout="wide"
+)
+
+class SimplifiedOMRProcessor:
+    """Simplified OMR processor optimized for your specific sheet format"""
     
-    def __init__(self, input_size=32):
-        super().__init__(input_size)
-        self.training_history = None
-        logger.info("Enhanced bubble classifier initialized")
+    def __init__(self):
+        self.questions_per_subject = 20
+        self.total_questions = 100
+        self.subjects = ['PYTHON', 'DATA ANALYSIS', 'MySQL', 'POWER BI', 'Adv STATS']
+        
+    def preprocess_image(self, image):
+        """Preprocess the uploaded image"""
+        # Convert PIL to OpenCV format
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+            if len(image.shape) == 2:
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif image.shape[2] == 4:
+                image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+            elif image.shape[2] == 3:
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Apply adaptive threshold for better bubble detection
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 11, 2
+        )
+        
+        return image, gray, thresh
     
-    def create_enhanced_model(self):
-        """Create an enhanced CNN model for better accuracy"""
-        try:
-            model = keras.Sequential([
-                # Input layer
-                keras.layers.Input(shape=(self.input_size, self.input_size, 1)),
+    def detect_bubbles(self, thresh_image):
+        """Detect all bubbles in the image"""
+        # Find contours
+        contours, _ = cv2.findContours(
+            thresh_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        
+        bubbles = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 50 or area > 500:  # Filter by area
+                continue
                 
-                # First block - Feature extraction
-                keras.layers.Conv2D(32, (5, 5), activation='relu', padding='same'),
-                keras.layers.BatchNormalization(),
-                keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
-                keras.layers.MaxPooling2D((2, 2)),
-                keras.layers.Dropout(0.25),
-                
-                # Second block - Pattern recognition
-                keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-                keras.layers.BatchNormalization(),
-                keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-                keras.layers.MaxPooling2D((2, 2)),
-                keras.layers.Dropout(0.25),
-                
-                # Third block - Complex features
-                keras.layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
-                keras.layers.BatchNormalization(),
-                keras.layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
-                keras.layers.MaxPooling2D((2, 2)),
-                keras.layers.Dropout(0.25),
-                
-                # Fourth block - High-level features
-                keras.layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
-                keras.layers.BatchNormalization(),
-                keras.layers.GlobalAveragePooling2D(),
-                
-                # Dense layers
-                keras.layers.Dense(512, activation='relu'),
-                keras.layers.BatchNormalization(),
-                keras.layers.Dropout(0.5),
-                
-                keras.layers.Dense(256, activation='relu'),
-                keras.layers.BatchNormalization(),
-                keras.layers.Dropout(0.5),
-                
-                keras.layers.Dense(128, activation='relu'),
-                keras.layers.Dropout(0.3),
-                
-                # Output layer - binary classification (filled/empty)
-                keras.layers.Dense(2, activation='softmax')
-            ])
+            # Get bounding box
+            x, y, w, h = cv2.boundingRect(contour)
             
-            # Use a lower learning rate for fine-tuning
-            model.compile(
-                optimizer=keras.optimizers.Adam(learning_rate=0.0005),
-                loss='sparse_categorical_crossentropy',
-                metrics=['accuracy', 'precision', 'recall']
-            )
+            # Check aspect ratio (bubbles should be roughly circular)
+            aspect_ratio = w / h if h > 0 else 0
+            if aspect_ratio < 0.7 or aspect_ratio > 1.3:
+                continue
             
-            self.model = model
-            logger.info("Enhanced model created successfully")
-            return model
-        except Exception as e:
-            logger.error(f"Failed to create enhanced model: {e}")
-            raise
+            # Calculate circularity
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                if circularity < 0.5:  # Filter non-circular shapes
+                    continue
+            
+            bubbles.append({
+                'x': x,
+                'y': y,
+                'w': w,
+                'h': h,
+                'cx': x + w // 2,
+                'cy': y + h // 2,
+                'area': area,
+                'contour': contour
+            })
+        
+        return bubbles
     
-    def train_with_synthetic_data(self, num_samples=10000):
-        """Train the model using synthetic bubble data with error handling"""
-        try:
-            logger.info(f"Generating {num_samples} synthetic training samples...")
-            
-            X = []
-            y = []
-            
-            for i in range(num_samples):
-                # Generate synthetic bubble
-                bubble_type = np.random.choice([0, 1], p=[0.5, 0.5])  # empty, filled
-                
-                bubble_img = self._generate_realistic_bubble(bubble_type == 1)
-                processed_bubble = self.preprocess_bubble_roi(bubble_img)
-                
-                X.append(processed_bubble)
-                y.append(bubble_type)
-                
-                if i % 1000 == 0:
-                    logger.debug(f"Generated {i}/{num_samples} samples")
-            
-            X = np.array(X)
-            y = np.array(y)
-            
-            # Split data
-            X_train, X_val, y_train, y_val = train_test_split(
-                X, y, test_size=0.2, random_state=42, stratify=y
-            )
-            
-            # Create model
-            self.create_enhanced_model()
-            
-            # Train
-            logger.info("Training CNN classifier...")
-            history = self.model.fit(
-                X_train, y_train,
-                validation_data=(X_val, y_val),
-                epochs=30,
-                batch_size=32,
-                callbacks=[
-                    keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True),
-                    keras.callbacks.ReduceLROnPlateau(patience=3)
-                ],
-                verbose=1
-            )
-            
-            self.is_trained = True
-            self.training_history = history
-            logger.info("Training completed successfully")
-            return history
-            
-        except Exception as e:
-            logger.error(f"Synthetic data training failed: {e}")
-            self.is_trained = False
-            raise
-    
-    def _generate_realistic_bubble(self, is_filled):
-        """Generate realistic synthetic bubble"""
-        try:
-            size = self.input_size
-            img = np.ones((size, size), dtype=np.uint8) * 255
-            
-            center = size // 2
-            radius = random.randint(size // 4, size // 3)
-            
-            # Draw circle outline with varying thickness
-            thickness = random.randint(1, 3)
-            outline_color = random.randint(50, 150)
-            cv2.circle(img, (center, center), radius, outline_color, thickness)
-            
-            if is_filled:
-                # Fill the bubble with varying intensity
-                fill_intensity = random.randint(30, 100)
-                cv2.circle(img, (center, center), radius - thickness, fill_intensity, -1)
-                
-                # Add some texture
-                for _ in range(random.randint(0, 3)):
-                    x = random.randint(center - radius//3, center + radius//3)
-                    y = random.randint(center - radius//3, center + radius//3)
-                    cv2.circle(img, (x, y), random.randint(1, 3), 
-                              fill_intensity + random.randint(-20, 20), -1)
-            
-            # Add realistic noise and distortions
-            # Gaussian noise
-            noise = np.random.normal(0, random.uniform(5, 15), (size, size))
-            img = np.clip(img + noise, 0, 255)
-            
-            # Random blur
-            if random.random() < 0.3:
-                kernel_size = random.choice([3, 5])
-                img = cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
-            
-            # Slight rotation
-            if random.random() < 0.4:
-                angle = random.uniform(-10, 10)
-                M = cv2.getRotationMatrix2D((center, center), angle, 1.0)
-                img = cv2.warpAffine(img, M, (size, size), borderValue=255)
-            
-            return img.astype(np.uint8)
-        except Exception as e:
-            logger.error(f"Failed to generate realistic bubble: {e}")
-            # Return simple circle as fallback
-            size = self.input_size
-            img = np.ones((size, size), dtype=np.uint8) * 255
-            center = size // 2
-            radius = size // 3
-            cv2.circle(img, (center, center), radius, 100, 2)
-            if is_filled:
-                cv2.circle(img, (center, center), radius - 3, 50, -1)
-            return img
-    
-    def save_model(self, filepath):
-        """Save trained model with error handling"""
-        try:
-            if self.model:
-                self.model.save(filepath)
-                logger.info(f"Model saved to {filepath}")
-                return True
+    def organize_bubbles_into_grid(self, bubbles):
+        """Organize detected bubbles into a grid structure"""
+        if not bubbles:
+            return {}
+        
+        # Sort bubbles by position
+        bubbles = sorted(bubbles, key=lambda b: (b['cy'], b['cx']))
+        
+        # Group bubbles into rows
+        rows = []
+        current_row = []
+        row_y = bubbles[0]['cy'] if bubbles else 0
+        row_threshold = 15  # pixels tolerance for same row
+        
+        for bubble in bubbles:
+            if abs(bubble['cy'] - row_y) <= row_threshold:
+                current_row.append(bubble)
             else:
-                logger.warning("No model to save")
-                return False
-        except Exception as e:
-            logger.error(f"Failed to save model: {e}")
+                if current_row:
+                    rows.append(sorted(current_row, key=lambda b: b['cx']))
+                current_row = [bubble]
+                row_y = bubble['cy']
+        
+        if current_row:
+            rows.append(sorted(current_row, key=lambda b: b['cx']))
+        
+        # Group into questions (4 bubbles per question, 5 questions per row)
+        questions = {}
+        question_num = 1
+        
+        for row in rows:
+            # Process groups of 4 bubbles (A, B, C, D options)
+            for i in range(0, len(row), 4):
+                if i + 3 < len(row) and question_num <= 100:
+                    questions[question_num] = row[i:i+4]
+                    question_num += 1
+        
+        return questions
+    
+    def classify_bubble(self, image, bubble, threshold_value=0.3):
+        """Determine if a bubble is filled based on pixel intensity"""
+        x, y, w, h = bubble['x'], bubble['y'], bubble['w'], bubble['h']
+        
+        # Extract ROI with padding
+        padding = 2
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(image.shape[1], x + w + padding)
+        y2 = min(image.shape[0], y + h + padding)
+        
+        roi = image[y1:y2, x1:x2]
+        
+        if roi.size == 0:
             return False
-    
-    def load_model(self, filepath):
-        """Load trained model with enhanced error handling"""
-        try:
-            if not os.path.exists(filepath):
-                logger.warning(f"Model file not found: {filepath}")
-                return False
-                
-            self.model = keras.models.load_model(filepath)
-            self.is_trained = True
-            logger.info(f"Model loaded successfully from {filepath}")
-            return True
-        except Exception as e:
-            logger.error(f"Error loading model from {filepath}: {e}")
-            self.model = None
-            self.is_trained = False
+        
+        # Calculate the percentage of dark pixels
+        _, binary = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        total_pixels = roi.shape[0] * roi.shape[1]
+        
+        if total_pixels == 0:
             return False
-
-class RealDataBubbleExtractor:
-    """Extract bubble regions from your real OMR sheets for training with error handling"""
-    
-    def __init__(self, samples_folder: str, answer_key_path: str):
-        self.samples_folder = samples_folder
+            
+        dark_pixels = np.sum(binary == 0)
+        fill_ratio = dark_pixels / total_pixels
         
-        try:
-            self.answer_key_loader = OMRAnswerKeyLoader(answer_key_path)
-            self.preprocessor = AdvancedImagePreprocessor()
-            self.bubble_detector = BubbleDetectorAdvanced()
-            logger.info("Real data bubble extractor initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize bubble extractor: {e}")
-            raise
+        # Bubble is considered filled if more than threshold of pixels are dark
+        return fill_ratio > threshold_value
     
-    def extract_labeled_bubbles_from_sheets(self, set_name='Set A', max_sheets=5):
-        """Extract bubbles with labels from real OMR sheets"""
-        try:
-            set_folder = os.path.join(self.samples_folder, set_name)
-            
-            if not os.path.exists(set_folder):
-                logger.error(f"Folder not found: {set_folder}")
-                return []
-            
-            image_files = [f for f in os.listdir(set_folder) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            image_files = image_files[:max_sheets]  # Limit number of sheets
-            
-            labeled_bubbles = []
-            sheet_version = set_name.replace(' ', '_').upper()
-            
-            if sheet_version not in self.answer_key_loader.answer_keys:
-                logger.error(f"No answer key found for {sheet_version}")
-                return []
-            
-            correct_answers = self.answer_key_loader.answer_keys[sheet_version]
-            
-            logger.info(f"Extracting bubbles from {len(image_files)} sheets in {set_name}")
-            
-            for image_file in image_files:
-                image_path = os.path.join(set_folder, image_file)
-                
-                try:
-                    # Preprocess image
-                    processed_image = self.preprocessor.preprocess_image(image_path)
-                    
-                    # Detect bubbles
-                    bubbles = self.bubble_detector.detect_bubbles_by_contours(processed_image)
-                    
-                    # Organize into questions
-                    questions = self.bubble_detector.organize_bubbles_into_grid(bubbles)
-                    
-                    # Extract labeled bubbles
-                    sheet_bubbles = self._extract_labeled_bubbles_from_questions(
-                        questions, correct_answers, image_file
-                    )
-                    
-                    labeled_bubbles.extend(sheet_bubbles)
-                    
-                    logger.info(f"Extracted {len(sheet_bubbles)} labeled bubbles from {image_file}")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing {image_file}: {e}")
-                    continue
-            
-            logger.info(f"Total labeled bubbles extracted: {len(labeled_bubbles)}")
-            return labeled_bubbles
-        except Exception as e:
-            logger.error(f"Bubble extraction failed: {e}")
-            return []
-    
-    def _extract_labeled_bubbles_from_questions(self, questions, correct_answers, image_file):
-        """Extract bubbles with ground truth labels"""
-        labeled_bubbles = []
-        option_labels = ['A', 'B', 'C', 'D']
+    def extract_answers(self, image, questions):
+        """Extract answers from detected questions"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        answers = {}
         
-        try:
-            for question_num, bubble_list in questions.items():
-                if question_num > len(correct_answers) or len(bubble_list) != 4:
-                    continue
-                
-                correct_answer = correct_answers[question_num - 1]
-                correct_option_idx = option_labels.index(correct_answer) if correct_answer in option_labels else -1
-                
-                for i, bubble in enumerate(bubble_list):
-                    try:
-                        # Label: 1 if this bubble should be filled, 0 if empty
-                        label = 1 if i == correct_option_idx else 0
-                        
-                        labeled_bubbles.append({
-                            'roi': bubble['roi'],
-                            'label': label,
-                            'question_num': question_num,
-                            'option': option_labels[i],
-                            'image_file': image_file,
-                            'bbox': bubble['bbox']
-                        })
-                    except Exception as e:
-                        logger.debug(f"Error processing bubble {i} in question {question_num}: {e}")
-                        continue
+        for question_num, bubbles in questions.items():
+            if len(bubbles) != 4:
+                answers[question_num] = 'INVALID'
+                continue
             
-            return labeled_bubbles
-        except Exception as e:
-            logger.error(f"Error extracting labeled bubbles: {e}")
-            return []
-    
-    def save_labeled_dataset(self, labeled_bubbles, output_folder='training_data'):
-        """Save labeled dataset for training"""
-        try:
-            os.makedirs(output_folder, exist_ok=True)
-            os.makedirs(os.path.join(output_folder, 'filled'), exist_ok=True)
-            os.makedirs(os.path.join(output_folder, 'empty'), exist_ok=True)
+            # Check which bubble is filled
+            filled_indices = []
+            fill_scores = []
             
-            dataset_info = []
-            saved_count = 0
-            
-            for i, bubble_data in enumerate(labeled_bubbles):
-                try:
-                    roi = bubble_data['roi']
-                    label = bubble_data['label']
+            for i, bubble in enumerate(bubbles):
+                is_filled = self.classify_bubble(gray, bubble)
+                if is_filled:
+                    filled_indices.append(i)
                     
-                    if roi is None or roi.size == 0:
-                        logger.debug(f"Skipping empty ROI at index {i}")
-                        continue
-                    
-                    # Save image
-                    folder_name = 'filled' if label == 1 else 'empty'
-                    filename = f"bubble_{i:06d}.png"
-                    filepath = os.path.join(output_folder, folder_name, filename)
-                    
-                    success = cv2.imwrite(filepath, roi)
-                    if not success:
-                        logger.warning(f"Failed to save image: {filepath}")
-                        continue
-                    
-                    # Save metadata
-                    dataset_info.append({
-                        'filename': filename,
-                        'label': label,
-                        'question_num': bubble_data['question_num'],
-                        'option': bubble_data['option'],
-                        'image_file': bubble_data['image_file'],
-                        'folder': folder_name
-                    })
-                    saved_count += 1
-                    
-                except Exception as e:
-                    logger.warning(f"Error saving bubble {i}: {e}")
-                    continue
+                    # Calculate fill score for disambiguation
+                    x, y, w, h = bubble['x'], bubble['y'], bubble['w'], bubble['h']
+                    roi = gray[y:y+h, x:x+w]
+                    if roi.size > 0:
+                        fill_score = np.mean(255 - roi)
+                        fill_scores.append(fill_score)
             
-            # Save dataset info
-            info_path = os.path.join(output_folder, 'dataset_info.json')
-            with open(info_path, 'w') as f:
-                json.dump(dataset_info, f, indent=2)
-            
-            logger.info(f"Saved {saved_count} labeled samples to {output_folder}")
-            return output_folder
-            
-        except Exception as e:
-            logger.error(f"Failed to save labeled dataset: {e}")
-            return None
-
-class OMRTrainingPipeline:
-    """Complete training pipeline for your OMR system with error handling"""
-    
-    def __init__(self, samples_folder: str, answer_key_path: str):
-        self.samples_folder = samples_folder
-        self.answer_key_path = answer_key_path
-        
-        try:
-            if IMPORTS_SUCCESS:
-                self.extractor = RealDataBubbleExtractor(samples_folder, answer_key_path)
+            # Determine answer
+            options = ['A', 'B', 'C', 'D']
+            if len(filled_indices) == 1:
+                answers[question_num] = options[filled_indices[0]]
+            elif len(filled_indices) > 1:
+                # Multiple bubbles filled - choose the darkest one
+                if fill_scores:
+                    best_idx = filled_indices[np.argmax(fill_scores)]
+                    answers[question_num] = options[best_idx]
+                else:
+                    answers[question_num] = 'MULTIPLE'
             else:
-                self.extractor = None
-                logger.warning("Real data extractor not available due to import issues")
-                
-            self.classifier = EnhancedBubbleClassifier()
-            logger.info("Training pipeline initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize training pipeline: {e}")
-            raise
+                answers[question_num] = 'BLANK'
+        
+        return answers
     
-    def run_complete_training_pipeline(self):
-        """Run the complete training pipeline with comprehensive error handling"""
-        try:
-            logger.info("Starting OMR Training Pipeline...")
-            
-            # Try to extract real data if available
-            all_bubbles = []
-            if self.extractor:
-                try:
-                    # Step 1: Extract labeled bubbles from real sheets
-                    logger.info("Step 1: Extracting labeled bubbles from real OMR sheets...")
-                    set_a_bubbles = self.extractor.extract_labeled_bubbles_from_sheets('Set A', max_sheets=5)
-                    set_b_bubbles = self.extractor.extract_labeled_bubbles_from_sheets('Set B', max_sheets=5)
-                    
-                    all_bubbles = set_a_bubbles + set_b_bubbles
-                    
-                    if len(all_bubbles) < 50:
-                        logger.warning(f"Only {len(all_bubbles)} bubbles extracted. Using synthetic training only.")
-                        all_bubbles = []
-                except Exception as e:
-                    logger.warning(f"Real data extraction failed, using synthetic training only: {e}")
-                    all_bubbles = []
-            
-            # Step 2: Train classifier (with or without real data)
-            logger.info("Step 2: Training bubble classifier...")
-            try:
-                training_results = self.classifier.train_with_synthetic_data(num_samples=15000)
-            except Exception as e:
-                logger.error(f"Training failed: {e}")
-                raise
-            
-            # Step 3: Save trained model
-            model_path = 'enhanced_omr_classifier.h5'
-            if not self.classifier.save_model(model_path):
-                logger.warning("Failed to save model, but training completed")
-            
-            # Step 4: Generate training report
-            report = self._generate_training_report(training_results, len(all_bubbles))
-            
-            # Save report
-            try:
-                with open('training_report.txt', 'w') as f:
-                    f.write(report)
-                logger.info("Training report saved to training_report.txt")
-            except Exception as e:
-                logger.warning(f"Failed to save training report: {e}")
-            
-            logger.info("Training pipeline completed successfully!")
-            logger.info(f"Model {'saved to' if os.path.exists(model_path) else 'attempted to save to'}: {model_path}")
-            
-            return {
-                'training_time': datetime.now() - datetime.now(),
-                'test_accuracy': 0.85,  # Estimated
-                'test_precision': 0.83,
-                'test_recall': 0.87,
-                'confusion_matrix': np.array([[100, 10], [15, 95]]),
-                'history': training_results
-            }
-            
-        except Exception as e:
-            logger.error(f"Training pipeline failed: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+    def process_image(self, image):
+        """Main processing pipeline"""
+        # Preprocess
+        original, gray, thresh = self.preprocess_image(image)
+        
+        # Detect bubbles
+        bubbles = self.detect_bubbles(thresh)
+        
+        # Organize into grid
+        questions = self.organize_bubbles_into_grid(bubbles)
+        
+        # Extract answers
+        answers = self.extract_answers(original, questions)
+        
+        # Fill missing questions
+        for q in range(1, 101):
+            if q not in answers:
+                answers[q] = 'NOT_DETECTED'
+        
+        return {
+            'answers': answers,
+            'bubbles_detected': len(bubbles),
+            'questions_detected': len(questions),
+            'image_shape': original.shape
+        }
     
-    def _generate_training_report(self, training_results, num_real_bubbles):
-        """Generate comprehensive training report"""
-        try:
-            report = f"""
-OMR BUBBLE CLASSIFIER TRAINING REPORT
-=====================================
-Training Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Training Status: {'SUCCESS' if training_results else 'FAILED'}
-
-DATA STATISTICS:
-- Real bubble samples extracted: {num_real_bubbles}
-- Synthetic samples used: 15000
-- Training method: {'Hybrid (Real + Synthetic)' if num_real_bubbles > 0 else 'Synthetic Only'}
-
-MODEL ARCHITECTURE:
-- Enhanced CNN with 4 convolutional blocks
-- Data augmentation applied
-- Early stopping and learning rate reduction
-- Model checkpoint saving
-
-TRAINING RESULTS:
-- Model successfully trained: {self.classifier.is_trained}
-- Expected accuracy on real OMR sheets: ~85%
-- Fallback processing available if needed
-
-RECOMMENDATIONS:
-- System is ready for production use
-- Consider adding more real training data if available
-- Monitor performance and retrain if needed
-"""
+    def calculate_score(self, student_answers, answer_key):
+        """Calculate score based on answer key"""
+        correct = 0
+        wrong = 0
+        blank = 0
+        
+        details = []
+        
+        for q_num in range(1, 101):
+            student_ans = student_answers.get(q_num, 'BLANK')
+            correct_ans = answer_key.get(q_num, '')
             
-            return report
-        except Exception as e:
-            logger.error(f"Report generation failed: {e}")
-            return f"Training completed but report generation failed: {e}"
+            if student_ans == 'BLANK' or student_ans == 'NOT_DETECTED':
+                blank += 1
+                status = 'Blank'
+            elif student_ans == 'MULTIPLE':
+                wrong += 1
+                status = 'Multiple'
+            elif student_ans == correct_ans:
+                correct += 1
+                status = '✓'
+            else:
+                wrong += 1
+                status = '✗'
+            
+            details.append({
+                'Question': q_num,
+                'Student Answer': student_ans,
+                'Correct Answer': correct_ans,
+                'Status': status
+            })
+        
+        return {
+            'correct': correct,
+            'wrong': wrong,
+            'blank': blank,
+            'total_score': correct,
+            'percentage': (correct / 100) * 100,
+            'details': details
+        }
+
+def create_sample_answer_key():
+    """Create a sample answer key"""
+    # This is a sample - replace with your actual answer key
+    answer_key = {}
+    options = ['A', 'B', 'C', 'D']
+    
+    # Generate sample answers (you should replace this with actual answer key)
+    for i in range(1, 101):
+        answer_key[i] = options[(i - 1) % 4]
+    
+    return answer_key
 
 def main():
-    """Main function to run the training pipeline"""
-    parser = argparse.ArgumentParser(description='Train OMR Bubble Classifier')
-    parser.add_argument('--samples-folder', type=str, default='samples', 
-                       help='Path to samples folder containing Set A and Set B')
-    parser.add_argument('--answer-key', type=str, default='Key (Set A and B).xlsx',
-                       help='Path to Excel answer key file')
-    parser.add_argument('--max-sheets-per-set', type=int, default=5,
-                       help='Maximum number of sheets to process per set')
+    st.title("📝 OMR Sheet Evaluator")
+    st.markdown("### Automatic evaluation of 100-question OMR sheets")
     
-    args = parser.parse_args()
+    # Initialize processor
+    processor = SimplifiedOMRProcessor()
     
-    try:
-        # Initialize and run training pipeline
-        pipeline = OMRTrainingPipeline(args.samples_folder, args.answer_key)
+    # Sidebar for configuration
+    with st.sidebar:
+        st.header("Configuration")
         
-        results = pipeline.run_complete_training_pipeline()
+        st.subheader("Answer Key")
+        answer_key_option = st.radio(
+            "Select answer key source:",
+            ["Use Sample Key", "Upload Answer Key", "Manual Entry"]
+        )
         
-        print("\n" + "="*50)
-        print("TRAINING COMPLETED!")
-        print("="*50)
-        print(f"Status: SUCCESS")
-        print(f"Model saved as: enhanced_omr_classifier.h5")
-        print("Check training_report.txt for detailed results")
+        answer_key = {}
         
-    except Exception as e:
-        logger.error(f"Training failed: {e}")
-        print("\n" + "="*50)
-        print("TRAINING FAILED")
-        print("="*50)
-        print(f"Error: {e}")
-        print("Check logs for more details")
+        if answer_key_option == "Use Sample Key":
+            answer_key = create_sample_answer_key()
+            st.success("Sample answer key loaded")
+            
+        elif answer_key_option == "Upload Answer Key":
+            key_file = st.file_uploader("Upload answer key (JSON)", type=['json'])
+            if key_file:
+                answer_key = json.load(key_file)
+                st.success(f"Loaded {len(answer_key)} answers")
+                
+        else:  # Manual Entry
+            st.write("Enter answers for each question:")
+            cols = st.columns(4)
+            for i in range(1, 101):
+                col_idx = (i - 1) % 4
+                with cols[col_idx]:
+                    answer_key[i] = st.selectbox(
+                        f"Q{i}", 
+                        ['A', 'B', 'C', 'D'],
+                        key=f"q_{i}"
+                    )
+        
+        st.subheader("Detection Settings")
+        threshold = st.slider(
+            "Fill Detection Threshold",
+            min_value=0.1,
+            max_value=0.5,
+            value=0.3,
+            step=0.05,
+            help="Lower values detect lighter marks"
+        )
+    
+    # Main content area
+    st.header("Upload OMR Sheet")
+    
+    uploaded_file = st.file_uploader(
+        "Choose an OMR sheet image",
+        type=['png', 'jpg', 'jpeg'],
+        help="Upload a clear photo of the filled OMR sheet"
+    )
+    
+    if uploaded_file is not None:
+        # Load and display image
+        image = Image.open(uploaded_file)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Original Image")
+            st.image(image, use_column_width=True)
+        
+        # Process button
+        if st.button("🔍 Process OMR Sheet", type="primary"):
+            with st.spinner("Processing image..."):
+                # Process the image
+                results = processor.process_image(image)
+                
+                # Calculate score if answer key is available
+                if answer_key:
+                    score_results = processor.calculate_score(
+                        results['answers'], 
+                        answer_key
+                    )
+                    
+                    with col2:
+                        st.subheader("Results")
+                        
+                        # Display metrics
+                        met_col1, met_col2, met_col3 = st.columns(3)
+                        with met_col1:
+                            st.metric("Correct", score_results['correct'])
+                        with met_col2:
+                            st.metric("Wrong", score_results['wrong'])
+                        with met_col3:
+                            st.metric("Blank", score_results['blank'])
+                        
+                        # Overall score
+                        st.success(f"**Total Score: {score_results['total_score']}/100 ({score_results['percentage']:.1f}%)**")
+                        
+                        # Subject-wise breakdown
+                        st.subheader("Subject-wise Performance")
+                        subjects = processor.subjects
+                        subject_scores = {}
+                        
+                        for i, subject in enumerate(subjects):
+                            start_q = i * 20 + 1
+                            end_q = start_q + 19
+                            
+                            correct_in_subject = sum(
+                                1 for q in range(start_q, end_q + 1)
+                                if results['answers'].get(q) == answer_key.get(q)
+                            )
+                            subject_scores[subject] = correct_in_subject
+                        
+                        subject_df = pd.DataFrame(
+                            subject_scores.items(),
+                            columns=['Subject', 'Score (out of 20)']
+                        )
+                        st.dataframe(subject_df)
+                    
+                    # Detection statistics
+                    with st.expander("Detection Statistics"):
+                        st.write(f"Total bubbles detected: {results['bubbles_detected']}")
+                        st.write(f"Questions organized: {results['questions_detected']}")
+                        st.write(f"Image dimensions: {results['image_shape']}")
+                    
+                    # Detailed answers
+                    with st.expander("Detailed Answer Sheet"):
+                        details_df = pd.DataFrame(score_results['details'])
+                        
+                        # Display in groups of 20
+                        for i in range(0, 100, 20):
+                            st.write(f"**Questions {i+1}-{i+20}**")
+                            st.dataframe(
+                                details_df.iloc[i:i+20],
+                                use_container_width=True
+                            )
+                    
+                    # Export results
+                    st.subheader("Export Results")
+                    
+                    # Prepare export data
+                    export_data = {
+                        'timestamp': datetime.now().isoformat(),
+                        'score': score_results['total_score'],
+                        'percentage': score_results['percentage'],
+                        'correct': score_results['correct'],
+                        'wrong': score_results['wrong'],
+                        'blank': score_results['blank'],
+                        'answers': results['answers'],
+                        'subject_scores': subject_scores
+                    }
+                    
+                    # Download button
+                    st.download_button(
+                        label="📥 Download Results (JSON)",
+                        data=json.dumps(export_data, indent=2),
+                        file_name=f"omr_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                    
+                else:
+                    st.warning("Please provide an answer key to calculate scores")
+                    
+                    # Show detected answers
+                    with col2:
+                        st.subheader("Detected Answers")
+                        answers_df = pd.DataFrame(
+                            results['answers'].items(),
+                            columns=['Question', 'Answer']
+                        )
+                        st.dataframe(answers_df)
 
 if __name__ == "__main__":
     main()
