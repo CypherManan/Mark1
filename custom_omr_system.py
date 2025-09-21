@@ -220,48 +220,44 @@ class BubbleDetectorAdvanced:
         return grid_lines
     
     def detect_bubbles_by_contours(self, image):
-        """Detect bubbles using contour analysis"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Apply blur
         blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-        
-        # Apply threshold
-        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        # Find contours
+    
+        # Use adaptive threshold instead of OTSU for better results
+        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                  cv2.THRESH_BINARY_INV, 11, 2)
+    
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
+    
         bubbles = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            perimeter = cv2.arcLength(contour, True)
-            
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
+        
+            # Adjusted area range for your specific bubbles
+            if 50 < area < 500:  # Changed from 100 < area < 1000
+                perimeter = cv2.arcLength(contour, True)
+                if perimeter > 0:
+                    circularity = 4 * np.pi * area / (perimeter * perimeter)
                 
-                # Filter by size and circularity
-                if (100 < area < 1000 and circularity > 0.3):
-                    x, y, w, h = cv2.boundingRect(contour)
+                    # Lowered circularity threshold
+                    if circularity > 0.5:  # Changed from 0.3
+                        x, y, w, h = cv2.boundingRect(contour)
+                        aspect_ratio = w / h
                     
-                    # Check aspect ratio
-                    aspect_ratio = w / h
-                    if 0.7 < aspect_ratio < 1.3:  # Nearly square
-                        bubble_roi = gray[y:y+h, x:x+w]
-                        
-                        bubbles.append({
-                            'contour': contour,
-                            'bbox': (x, y, w, h),
-                            'center': (x + w//2, y + h//2),
-                            'area': area,
-                            'circularity': circularity,
-                            'roi': bubble_roi
-                        })
-        
-        # Sort by position (top to bottom, left to right)
-        bubbles.sort(key=lambda b: (b['center'][1] // 30, b['center'][0]))
-        
-        return bubbles
+                        if 0.7 < aspect_ratio < 1.3:
+                            bubble_roi = gray[y:y+h, x:x+w]
+                            bubbles.append({
+                                'contour': contour,
+                                'bbox': (x, y, w, h),
+                                'center': (x + w//2, y + h//2),
+                                'area': area,
+                                'circularity': circularity,
+                                'roi': bubble_roi
+                            })
+    
+    # Sort bubbles properly
+    bubbles.sort(key=lambda b: (b['center'][1] // 20, b['center'][0]))
+    return bubbles
     
     def organize_bubbles_into_grid(self, bubbles, questions_per_row=5):
         """Organize bubbles into question-answer grid"""
@@ -755,3 +751,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
