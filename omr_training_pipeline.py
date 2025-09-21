@@ -16,11 +16,15 @@ from PIL import Image, ImageDraw, ImageFont
 import random
 from typing import List, Tuple, Dict
 
-# Import your custom OMR classes
-from custom_omr_system import (
-    OMRAnswerKeyLoader, AdvancedImagePreprocessor, 
-    BubbleDetectorAdvanced, BubbleCNNClassifier
-)
+# Instead of importing from custom_omr_system, define classes locally or ensure the file exists
+try:
+    from custom_omr_system import (
+        OMRAnswerKeyLoader, AdvancedImagePreprocessor, 
+        BubbleDetectorAdvanced, BubbleCNNClassifier
+    )
+except ImportError:
+    # If imports fail, you'll need to ensure custom_omr_system.py exists
+    pass
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -633,3 +637,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
